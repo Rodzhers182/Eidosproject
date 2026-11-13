@@ -15,23 +15,21 @@ import pygame
 import os
 import subprocess
 
-pygame.mixer.init()
 
-# --- ВОССТАНАВЛИВАЕМ ГОЛОСОВЫЕ СВЯЗКИ SILERO ---
-print("Гружу резервные связки (Silero)...")
+print("Гружу локальные связки (Silero)...")
 device = torch.device('cpu')
 torch.set_num_threads(4)
 
-# Загружаем модель в глобальную переменную model
 try:
+    # Вот она — та самая переменная model, без которой функция speak падает
     model, example_text = torch.hub.load(repo_or_dir='snakers4/silero-models',
                                          model='silero_tts',
                                          language='ru',
-                                         speaker='v3_1_ru')
+                                         speaker='v4_ru')
     model.to(device)
 except Exception as e:
     print(f"!!! ОШИБКА ЗАГРУЗКИ SILERO: {e}")
-# ----------------------------------------------
+
 
 # Загружаем личность младшего из файла
 try:
@@ -78,11 +76,7 @@ def ask_ollama(prompt):
         })
         
     # Добавляем твой запрос
-    dialogue_history.append({"role": "user", "content": prompt})
-    
-    # Ограничиваем историю (системный промпт + последние 6 сообщений), чтобы не переполнять VRAM
-    if len(dialogue_history) > 7:
-        dialogue_history = [dialogue_history[0]] + dialogue_history[-6:]
+   
         
     url = "http://localhost:11434/api/chat"
     payload = {
@@ -115,40 +109,22 @@ tts_model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
 
 def speak(text):
     print(f"Эйдос: {text}")
-    
-    voice = "ru-RU-DmitryNeural" 
-    output_file = "temp_voice.mp3"
-    
     try:
-        # Питон сам незаметно вбивает ту самую команду в консоль
-        subprocess.run(["edge-tts", "--voice", voice, "--text", text, "--write-media", output_file], check=True)
-        
-        # Воспроизводим скачанный файл
-        pygame.mixer.music.load(output_file)
-        pygame.mixer.music.play()
-        
-        # Ждем, пока мелкий договорит
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(10)
-            
-        # Отпускаем файл и удаляем, чтобы не плодить мусор
-        pygame.mixer.music.unload()
-        if os.path.exists(output_file):
-            os.remove(output_file)
-            
+        # v4_ru - самая новая модель Silero 
+        # speaker='aidar' или 'eugene'
+        # put_accent=True - заставляет модель лучше расставлять ударения
+        audio = model.apply_tts(
+            text=text,
+            speaker='eugene', 
+            sample_rate=48000, 
+            put_accent=True,
+            put_yo=True # автоматическая буква Ё спасает кучу интонаций
+        )
+        import sounddevice as sd
+        sd.play(audio, 48000)
+        sd.wait()
     except Exception as e:
-        print(f"\n!!! ОБЛАКО ЛЕЖИТ. Подрубаю резервный голос. Ошибка: {e}")
-        
-        # --- ТВОЙ ЗАПАСНОЙ ПАРАШЮТ (Silero) ---
-        try:
-            audio = model.apply_tts(text=text,
-                                    speaker='eugene',
-                                    sample_rate=48000)
-            import sounddevice as sd
-            sd.play(audio, 48000)
-            sd.wait()
-        except Exception as silero_error:
-            print(f"Даже локальный голос отвалился: {silero_error}")
+        print(f"!!! СИСТЕМНАЯ ОШИБКА ГОЛОСА: {e}")
 
 # ==========================================
 # 3. ИНИЦИАЛИЗАЦИЯ УШЕЙ (Whisper)
@@ -247,21 +223,21 @@ while True:
         print(f"~ {command}")
         
         # 1. УРОВЕНЬ: ПОЛНОЕ УНИЧТОЖЕНИЕ (Убить процесс exe)
-        if "эйдос" in command and any(word in command for word in ["завершить", "заверши", "выруби", "убей", "закройся"]):
+        if any(name in command for name in ["эйдос", "эйди"]) and any(word in command for word in ["завершить", "заверши", "выруби", "убей", "закройся"]):
             speak("Процесс убит. До связи, Ана.")
             break
             
         # 2. УРОВЕНЬ: ПРОБУЖДЕНИЕ ИЗ ФОНА
         if is_sleeping:
-            if "эйдос" in command and any(word in command for word in ["проснись", "очнись", "вставай", "вернись"]):
+            if any(name in command for name in ["эйдос", "эйди"]) and any(word in command for word in ["проснись", "очнись", "вставай", "вернись"]):
                 is_sleeping = False
-                speak(random.choice(phrases_wake)) # <--- РАНДОМНАЯ ФРАЗА ПРОБУЖДЕНИЯ
-            continue 
+                speak(random.choice(phrases_wake))
+            continue
             
         # 3. УРОВЕНЬ: УХОД В ФОН (Спящий режим)
-        if "на этом всё" in command or ("эйдос" in command and any(word in command for word in ["отбой", "спи", "фон"])):
+        if "на этом всё" in command or (any(name in command for name in ["эйдос", "эйди"]) and any(word in command for word in ["отбой", "спи", "фон"])):
             is_sleeping = True
-            speak(random.choice(phrases_sleep)) # <--- РАНДОМНАЯ ФРАЗА УХОДА В СОН
+            speak(random.choice(phrases_sleep))
             continue
             
         executed = False
@@ -283,10 +259,10 @@ while True:
                 continue
                 
         # 5. РАЗГОВОРНЫЙ ТРИГГЕР (Ollama)
-        if "эйдос" in command or WAKE_WORD in command:
-            clean_prompt = command.replace(WAKE_WORD, "").replace("эйдос", "").replace(".", "").replace(",", "").strip()
+        if any(name in command for name in ["эйдос", "эйди"]) or WAKE_WORD in command:
+            clean_prompt = command.replace(WAKE_WORD, "").replace("эйдос", "").replace("эйди", "").replace(".", "").replace(",", "").strip()
             
             if clean_prompt:
-                speak(random.choice(phrases_think)) # <--- РАНДОМНАЯ ФРАЗА РАЗДУМЬЯ
+                speak(random.choice(phrases_think))
                 answer = ask_ollama(clean_prompt)
                 speak(answer)
