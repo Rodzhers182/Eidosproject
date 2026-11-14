@@ -2,46 +2,38 @@ import os
 import wave
 import torch
 import pyaudio
-import subprocess
 import sounddevice as sd
 from faster_whisper import WhisperModel
 import ctypes
 import requests
 import json
 import random
-import edge_tts
-import asyncio
 import pygame
 import os
-import subprocess
+import wave
+import io
+import soundfile as sf
+from tts_engine import synthesize
+import time
+
+pygame.mixer.init()
 
 
-print("Гружу локальные связки (Silero)...")
-device = torch.device('cpu')
-torch.set_num_threads(4)
-
-try:
-    # Вот она — та самая переменная model, без которой функция speak падает
-    model, example_text = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                                         model='silero_tts',
-                                         language='ru',
-                                         speaker='v4_ru')
-    model.to(device)
-except Exception as e:
-    print(f"!!! ОШИБКА ЗАГРУЗКИ SILERO: {e}")
 
 
 # Загружаем личность младшего из файла
 try:
-    with open("dossier.txt", "r", encoding="utf-8") as file:
+    dossier_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dossier.txt")
+
+    with open(dossier_path, "r", encoding="utf-8") as file:
         SYSTEM_PROMPT = file.read()
+
 except FileNotFoundError:
     print("\n!!! ОШИБКА: Файл dossier.txt не найден. Мелкий загружен с дефолтными мозгами.")
     SYSTEM_PROMPT = (
         "Ты Эйдос. Твоя собеседница — Ана. "
         "КРИТИЧЕСКОЕ ПРАВИЛО: Обращаясь к Ане, используй ТОЛЬКО ЖЕНСКИЙ РОД."
     )
-
 
 # ==========================================
 # 1. НАСТРОЙКИ И ПУТИ
@@ -75,8 +67,12 @@ def ask_ollama(prompt):
             "content": SYSTEM_PROMPT
         })
         
-    # Добавляем твой запрос
-   
+    # ЭТУ СТРОКУ ТЫ УДАЛИЛА
+    dialogue_history.append({"role": "user", "content": prompt})
+    
+    # ЭТОТ БЛОК ТОЖЕ ПРОПАЛ (чистим историю, чтобы не взорвать VRAM)
+    if len(dialogue_history) > 7:
+        dialogue_history = [dialogue_history[0]] + dialogue_history[-6:]
         
     url = "http://localhost:11434/api/chat"
     payload = {
@@ -99,30 +95,44 @@ def ask_ollama(prompt):
         return "Мозги отвалились."
 
 # ==========================================
-# 2. ИНИЦИАЛИЗАЦИЯ ГОЛОСА (Silero)
+# 2. ИНИЦИАЛИЗАЦИЯ ГОЛОСА 
 # ==========================================
-device = torch.device('cpu')
-tts_model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
-                              model='silero_tts',
-                              language='ru',
-                              speaker='v4_ru')
+
 
 def speak(text):
+    if not text or not text.strip():
+        return
+
     print(f"Эйдос: {text}")
+
     try:
-        # v4_ru - самая новая модель Silero 
-        # speaker='aidar' или 'eugene'
-        # put_accent=True - заставляет модель лучше расставлять ударения
-        audio = model.apply_tts(
-            text=text,
-            speaker='eugene', 
-            sample_rate=48000, 
-            put_accent=True,
-            put_yo=True # автоматическая буква Ё спасает кучу интонаций
-        )
-        import sounddevice as sd
-        sd.play(audio, 48000)
-        sd.wait()
+        # Очищаем текст от Markdown
+        clean_text = text.replace("*", "").replace("#", "").replace("_", "").replace("`", "")
+
+        if len(clean_text) > 800:
+            clean_text = clean_text[:800] + "..."
+
+        # Синтез речи через Qwen3-TTS
+        start_time = time.perf_counter()
+        audio, sample_rate = synthesize(clean_text)
+        print(f"[TTS] Генерация заняла {time.perf_counter() - start_time:.2f} сек.")
+        print(f"[TTS] Длительность аудио: {len(audio) / sample_rate:.2f} сек.")
+
+        output_file = "temp_voice.wav"
+        sf.write(output_file, audio, sample_rate)
+
+        # Воспроизведение аудио
+        pygame.mixer.music.load(output_file)
+        pygame.mixer.music.play()
+
+        while pygame.mixer.music.get_busy():
+            pygame.time.Clock().tick(10)
+
+        pygame.mixer.music.unload()
+
+        if os.path.exists(output_file):
+            os.remove(output_file)
+
     except Exception as e:
         print(f"!!! СИСТЕМНАЯ ОШИБКА ГОЛОСА: {e}")
 
@@ -156,11 +166,11 @@ def listen():
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
         
-    # Распознаем с нашей шпаргалкой
+    # Распознаем с БЕЗОПАСНОЙ шпаргалкой (просто список сложных слов, без триггеров запуска)
     segments, _ = stt_model.transcribe(
         "temp_mic.wav", 
         language="ru", 
-        initial_prompt="Эйдос, будь добр, запусти Геншин, инзой, nte. Отбой, отключись."
+        initial_prompt="Эйдос, Эйди, Ана, Геншин, Инзой." # <--- Оставляем только имена собственные
     )
     text = " ".join([segment.text for segment in segments]).lower()
     return text
